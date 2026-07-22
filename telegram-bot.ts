@@ -434,7 +434,7 @@ export function startBot(): TelegramBot {
       const turns = (turnCount.get(chatId) ?? 0) + 1;
       turnCount.set(chatId, turns);
       if (turns % 6 === 0) {
-        setTimeout(() => void extractMemoryCandidate(chatId), 2000);
+        setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
       }
     } catch (err) {
       logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Groq API error (text)");
