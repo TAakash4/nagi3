@@ -1,7 +1,7 @@
 import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
 import { db, conversationHistoryTable, memoriesTable, memoryCandidatesTable } from "./db";
-import { eq, asc, and } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import { logger } from "./logger";
 import { memoryTypes, type MemoryType } from "./memory-candidates";
 
@@ -183,9 +183,9 @@ async function loadHistory(
     .select()
     .from(conversationHistoryTable)
     .where(eq(conversationHistoryTable.chatId, chatId))
-    .orderBy(asc(conversationHistoryTable.createdAt))
+    .orderBy(desc(conversationHistoryTable.createdAt))
     .limit(40);
-  return rows.map((r) => ({ role: r.role, content: r.content }));
+  return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
 }
 
 async function appendMessage(
@@ -205,7 +205,7 @@ async function loadMemories(chatId: number): Promise<string[]> {
     .select()
     .from(memoriesTable)
     .where(eq(memoriesTable.chatId, chatId))
-    .orderBy(asc(memoriesTable.createdAt));
+    .orderBy(desc(memoriesTable.createdAt));
   return rows.map((r) => r.content);
 }
 
@@ -229,7 +229,7 @@ function isMemoryType(value: unknown): value is MemoryType {
 }
 
 // ── 未承認の記憶候補抽出（バックグラウンド、6ターンごと） ──
-async function extractMemoryCandidate(chatId: number): Promise<void> {
+async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise<void> {
   try {
     const history = await loadHistory(chatId);
     const transcript = history
@@ -285,7 +285,7 @@ async function extractMemoryCandidate(chatId: number): Promise<void> {
     }).returning();
     if (!created) return;
 
-    await activeBot?.sendMessage(
+    await bot.sendMessage(
       chatId,
       `記憶候補\n種類：${MEMORY_LABELS[candidate.type]}\n内容：${content}`,
       { reply_markup: { inline_keyboard: [[
@@ -309,7 +309,7 @@ export function startBot(): TelegramBot {
   activeBot = bot;
   logger.info("Telegram bot started (凪)");
 
-  bot.onText(/\/start/, async (msg) => {
+  bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     await clearHistory(chatId);
     await replaceMemories(chatId, []);
@@ -317,14 +317,14 @@ export function startBot(): TelegramBot {
     await bot.sendMessage(chatId, "……来た。");
   });
 
-  bot.onText(/\/clear/, async (msg) => {
+  bot.onText(/^\/clear(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     await clearHistory(chatId);
     turnCount.set(chatId, 0);
     await bot.sendMessage(chatId, "（静かになった）");
   });
 
-  bot.onText(/\/memory/, async (msg) => {
+  bot.onText(/^\/memory(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     const mems = await loadMemories(chatId);
     if (mems.length === 0) {
@@ -334,7 +334,7 @@ export function startBot(): TelegramBot {
     }
   });
 
-  bot.onText(/\/help/, (msg) => {
+  bot.onText(/^\/help(?:@\w+)?$/, (msg) => {
     bot.sendMessage(
       msg.chat.id,
       "/start — はじめる（記憶もリセット）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/help — ヘルプ"
@@ -448,4 +448,3 @@ export function startBot(): TelegramBot {
 
   return bot;
 }
-

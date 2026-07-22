@@ -12,7 +12,6 @@ export PORT=3000
 export DATABASE_URL='postgresql://...'
 export TELEGRAM_BOT_TOKEN='...'
 export GROQ_API_KEY='...'
-pnpm run db:migrate
 pnpm run typecheck
 pnpm start
 ```
@@ -27,4 +26,10 @@ pnpm start
 - **見送り**: 候補を長期記憶へ追加しません。
 - 未操作の候補は `pending` のままで、応答プロンプトの長期記憶には含まれません。
 
-マイグレーションは既存の `memories` を削除せず、`type` 列と `memory_candidates` テーブルを追加します。
+マイグレーションは起動時に自動実行されます。既存の `memories` を削除せず、`type` 列と `memory_candidates` テーブルを追加します。手動で確認するときは `pnpm run db:migrate` を実行できます。
+
+## Railway
+
+Railwayのサービスには `DATABASE_URL`、`TELEGRAM_BOT_TOKEN`、`GROQ_API_KEY` を設定してください。`PORT` はRailwayが自動設定します。`railway.json` に起動コマンド、`/health` のヘルスチェック、失敗時の再起動方針を定義しています。
+
+Telegramのlong pollingでは同じBot Tokenを使うプロセスを複数同時に起動できません。レプリカ数は **1** にしてください。

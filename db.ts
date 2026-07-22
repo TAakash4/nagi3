@@ -10,4 +10,7 @@ if (!connectionString) throw new Error("DATABASE_URL is not set");
 
 const pool = new Pool({ connectionString });
 export const db = drizzle(pool);
+export async function closeDatabase(): Promise<void> {
+  await pool.end();
+}
 export { conversationHistoryTable, memoriesTable, memoryCandidatesTable };

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "tsx index.ts",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "psql \"$DATABASE_URL\" -f migrations/0001_memory_candidates.sql"
+    "db:migrate": "tsx migrate.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.44.3",
