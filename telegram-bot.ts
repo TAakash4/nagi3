@@ -1,8 +1,9 @@
 import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
-import { db, conversationHistoryTable, memoriesTable } from "@workspace/db";
-import { eq, asc } from "drizzle-orm";
+import { db, conversationHistoryTable, memoriesTable, memoryCandidatesTable } from "./db";
+import { eq, desc, and } from "drizzle-orm";
 import { logger } from "./logger";
+import { memoryTypes, type MemoryType } from "./memory-candidates";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const groqApiKey = process.env.GROQ_API_KEY;
@@ -154,6 +155,17 @@ const stripThinking = (text: string): string => {
   return text.trim();
 };
 
+const EMPTY_RESPONSE_FALLBACKS = [
+  "少し考えてた。もう一度聞かせて。",
+  "うまく言葉にならなかった。もう一度だけ送って。",
+] as const;
+
+function emptyResponseFallback(history: Array<{ role: "user" | "assistant"; content: string }>): string {
+  const previous = [...history].reverse().find((message) => message.role === "assistant")?.content;
+  return EMPTY_RESPONSE_FALLBACKS.find((fallback) => fallback !== previous)
+    ?? EMPTY_RESPONSE_FALLBACKS[0];
+}
+
 // ── 画像をbase64に変換 ──
 async function fetchImageAsBase64(url: string): Promise<{ base64: string; mimeType: string }> {
   const res = await fetch(url);
@@ -171,9 +183,9 @@ async function loadHistory(
     .select()
     .from(conversationHistoryTable)
     .where(eq(conversationHistoryTable.chatId, chatId))
-    .orderBy(asc(conversationHistoryTable.createdAt))
+    .orderBy(desc(conversationHistoryTable.createdAt))
     .limit(40);
-  return rows.map((r) => ({ role: r.role, content: r.content }));
+  return rows.reverse().map((r) => ({ role: r.role, content: r.content }));
 }
 
 async function appendMessage(
@@ -193,7 +205,7 @@ async function loadMemories(chatId: number): Promise<string[]> {
     .select()
     .from(memoriesTable)
     .where(eq(memoriesTable.chatId, chatId))
-    .orderBy(asc(memoriesTable.createdAt));
+    .orderBy(desc(memoriesTable.createdAt));
   return rows.map((r) => r.content);
 }
 
@@ -204,8 +216,20 @@ async function replaceMemories(chatId: number, items: string[]): Promise<void> {
   }
 }
 
-// ── メモリ抽出（バックグラウンド、6ターンごと） ──
-async function extractMemories(chatId: number, existing: string[]): Promise<void> {
+const MEMORY_LABELS: Record<MemoryType, string> = {
+  value: "価値観",
+  principle: "原則",
+  goal: "目標",
+  learning: "学び",
+  profile: "プロフィール",
+};
+
+function isMemoryType(value: unknown): value is MemoryType {
+  return typeof value === "string" && memoryTypes.includes(value as MemoryType);
+}
+
+// ── 未承認の記憶候補抽出（バックグラウンド、6ターンごと） ──
+async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise<void> {
   try {
     const history = await loadHistory(chatId);
     const transcript = history
@@ -213,19 +237,26 @@ async function extractMemories(chatId: number, existing: string[]): Promise<void
       .map((m) => `${m.role === "user" ? "ユーザー" : "凪"}: ${m.content}`)
       .join("\n");
 
-    const existingSection =
-      existing.length > 0 ? `既存の記憶:\n${existing.map((e) => `・${e}`).join("\n")}\n\n` : "";
+    const existing = await loadMemories(chatId);
+    const pending = await db.select().from(memoryCandidatesTable).where(and(
+      eq(memoryCandidatesTable.chatId, chatId),
+      eq(memoryCandidatesTable.status, "pending"),
+    ));
+    const known = [...existing, ...pending.map((item) => item.content)];
+    const existingSection = known.length > 0
+      ? `保存済みまたは確認中の情報:\n${known.map((e) => `・${e}`).join("\n")}\n\n`
+      : "";
 
     const prompt =
       existingSection +
-      `以下の会話から、長期的に有用な情報のみを抽出してください。\n` +
+      `以下の会話から、長期記憶にする価値が明確な情報を最大1件抽出してください。\n` +
       `条件：\n` +
       `・一時的な出来事（今日疲れた等）は除外\n` +
-      `・繰り返し登場するテーマ・言葉の癖・価値観・ストレスの出方など\n` +
-      `・各20文字以内\n` +
-      `・既存と重複する内容は統合\n` +
-      `・最大8件\n` +
-      `JSONのみ返答: { "memories": ["...", "..."] }\n\n会話:\n${transcript}`;
+      `・本人が述べていない推測は除外\n` +
+      `・種類は value / principle / goal / learning / profile のいずれか\n` +
+      `・既存または確認中の情報と重複する場合、候補なしにする\n` +
+      `・候補がなければ candidate を null にする\n` +
+      `JSONのみ返答: { "candidate": { "type": "goal", "content": "..." } | null }\n\n会話:\n${transcript}`;
 
     const res = await client.chat.completions.create({
       model: TEXT_MODEL,
@@ -241,13 +272,30 @@ async function extractMemories(chatId: number, existing: string[]): Promise<void
 
     const raw = res.choices[0]?.message?.content ?? "";
     const json = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(json) as { memories?: string[] };
-    if (Array.isArray(parsed.memories) && parsed.memories.length > 0) {
-      await replaceMemories(chatId, parsed.memories);
-      logger.info({ chatId, count: parsed.memories.length }, "Memories updated");
-    }
+    const parsed = JSON.parse(json) as { candidate?: { type?: unknown; content?: unknown } | null };
+    const candidate = parsed.candidate;
+    if (!candidate || !isMemoryType(candidate.type) || typeof candidate.content !== "string") return;
+    const content = candidate.content.trim();
+    if (!content || known.includes(content)) return;
+
+    const [created] = await db.insert(memoryCandidatesTable).values({
+      chatId,
+      type: candidate.type,
+      content,
+    }).returning();
+    if (!created) return;
+
+    await bot.sendMessage(
+      chatId,
+      `記憶候補\n種類：${MEMORY_LABELS[candidate.type]}\n内容：${content}`,
+      { reply_markup: { inline_keyboard: [[
+        { text: "保存", callback_data: `memory:save:${created.id}` },
+        { text: "見送り", callback_data: `memory:dismiss:${created.id}` },
+      ]] } },
+    );
+    logger.info({ chatId, candidateId: created.id }, "Memory candidate created");
   } catch (err) {
-    logger.warn({ err }, "Memory extraction failed (non-critical)");
+    logger.warn({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Memory candidate extraction failed (non-critical)");
   }
 }
 
@@ -259,7 +307,7 @@ export function startBot(): TelegramBot {
   const bot = new TelegramBot(token!, { polling: true });
   logger.info("Telegram bot started (凪)");
 
-  bot.onText(/\/start/, async (msg) => {
+  bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     await clearHistory(chatId);
     await replaceMemories(chatId, []);
@@ -267,14 +315,14 @@ export function startBot(): TelegramBot {
     await bot.sendMessage(chatId, "……来た。");
   });
 
-  bot.onText(/\/clear/, async (msg) => {
+  bot.onText(/^\/clear(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     await clearHistory(chatId);
     turnCount.set(chatId, 0);
     await bot.sendMessage(chatId, "（静かになった）");
   });
 
-  bot.onText(/\/memory/, async (msg) => {
+  bot.onText(/^\/memory(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
     const mems = await loadMemories(chatId);
     if (mems.length === 0) {
@@ -284,11 +332,60 @@ export function startBot(): TelegramBot {
     }
   });
 
-  bot.onText(/\/help/, (msg) => {
+  bot.onText(/^\/help(?:@\w+)?$/, (msg) => {
     bot.sendMessage(
       msg.chat.id,
       "/start — はじめる（記憶もリセット）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/help — ヘルプ"
     );
+  });
+
+  bot.on("callback_query", async (query) => {
+    const match = query.data?.match(/^memory:(save|dismiss):(\d+)$/);
+    if (!match || !query.message) return;
+    const action = match[1];
+    const candidateId = Number(match[2]);
+    const chatId = query.message.chat.id;
+
+    try {
+      const resolved = await db.transaction(async (tx) => {
+        const [candidate] = await tx.update(memoryCandidatesTable).set({
+          status: action === "save" ? "saved" : "dismissed",
+          resolvedAt: new Date(),
+        }).where(and(
+          eq(memoryCandidatesTable.id, candidateId),
+          eq(memoryCandidatesTable.chatId, chatId),
+          eq(memoryCandidatesTable.status, "pending"),
+        )).returning();
+
+        if (!candidate) return false;
+        if (action === "save") {
+          await tx.insert(memoriesTable).values({
+            chatId,
+            type: candidate.type,
+            content: candidate.content,
+          });
+        }
+        return true;
+      });
+
+      if (!resolved) {
+        await bot.answerCallbackQuery(query.id, { text: "この候補は処理済みです" });
+        return;
+      }
+
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+      });
+      await bot.answerCallbackQuery(query.id, { text: action === "save" ? "保存しました" : "見送りました" });
+    } catch (err) {
+      logger.error({
+        errorType: err instanceof Error ? err.name : "UnknownError",
+        chatId,
+        candidateId,
+      }, "Memory candidate resolution failed");
+      await bot.answerCallbackQuery(query.id, { text: "処理できませんでした" });
+    }
   });
 
   // テキストメッセージ
@@ -318,40 +415,35 @@ export function startBot(): TelegramBot {
         ],
       });
 
-      const raw = response.choices[0]?.message?.content ?? "（通信エラー）";
+      const raw = response.choices[0]?.message?.content ?? "";
 
       const cleaned = stripThinking(raw).trim();
 
-      let reply =
+      const reply =
         cleaned.length === 0 ||
         cleaned === "……" ||
         cleaned === "..." ||
         cleaned === "…" 
-          ? "少し考えてた。"
+          ? emptyResponseFallback(history)
           : cleaned;
-
-      if (!reply.trim()) {
-        reply = "少し考えてた。";
-      }
       await appendMessage(chatId, "assistant", reply);
       await bot.sendMessage(chatId, reply);
 
-      // 6ターンごとにバックグラウンドでメモリ抽出
+      // 6ターンごとに、長期記憶へ直接保存せず候補を抽出する
       const turns = (turnCount.get(chatId) ?? 0) + 1;
       turnCount.set(chatId, turns);
       if (turns % 6 === 0) {
-        setTimeout(() => extractMemories(chatId, memories), 2000);
+        setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
       }
     } catch (err) {
-      logger.error({ err }, "Groq API error (text)");
+      logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Groq API error (text)");
       await bot.sendMessage(chatId, "（通信エラー）");
     }
   });
 
   bot.on("polling_error", (err) => {
-    logger.error({ err }, "Telegram polling error");
+    logger.error({ errorType: err.name }, "Telegram polling error");
   });
 
   return bot;
 }
-
