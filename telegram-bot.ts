@@ -16,7 +16,7 @@ const client = new OpenAI({
   baseURL: "https://api.groq.com/openai/v1",
 });
 
-const TEXT_MODEL = "llama-3.1-70b-versatile";
+const TEXT_MODEL = "llama-3.3-70b-versatile";
 
 // ── 凪のキャラクター設定 ──
 const NAGI_PERSONALITY = `あなたは「凪」という名前です。性別も年齢も背景も持たない。長年の静かな友人のような存在です。
