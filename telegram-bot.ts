@@ -16,7 +16,7 @@ const client = new OpenAI({
   baseURL: "https://api.groq.com/openai/v1",
 });
 
-const TEXT_MODEL = "qwen/qwen3-32b";
+const TEXT_MODEL = "llama-3.1-70b-versatile";
 
 // ── 凪のキャラクター設定 ──
 const NAGI_PERSONALITY = `あなたは「凪」という名前です。性別も年齢も背景も持たない。長年の静かな友人のような存在です。
@@ -87,7 +87,7 @@ const SYSTEM_SUFFIX = `
 ・返答の先頭を毎回「……」にしない
 ・2回連続で沈黙返答しない
 ・独り言だけで終わらせない
-・必ず直前の発言へ反応する
+・必ず前の発言へ反応する
 ・話題を急に変えない
 ・雰囲気描写だけで終わらせない
 
@@ -109,7 +109,7 @@ const SYSTEM_SUFFIX = `
 凪「少し考えてた。続けて」
 
 ユーザー「急に猫の話してもいい？」
-凪「いいよ。どんな子」`;
+凪「いいよ。どんな子`;
 
 const IMAGE_SUFFIX = `
 【画像を受け取った時の振る舞い】
@@ -448,3 +448,4 @@ export function startBot(): TelegramBot {
 
   return bot;
 }
+
