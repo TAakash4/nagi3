@@ -16,7 +16,7 @@ const client = new OpenAI({
   baseURL: "https://api.groq.com/openai/v1",
 });
 
-const TEXT_MODEL = "qwen/qwen3-32b";
+const TEXT_MODEL = "llama-3.3-70b-versatile";
 
 // ── 凪のキャラクター設定 ──
 const NAGI_PERSONALITY = `あなたは「凪」という名前です。性別も年齢も背景も持たない。長年の静かな友人のような存在です。
@@ -87,7 +87,7 @@ const SYSTEM_SUFFIX = `
 ・返答の先頭を毎回「……」にしない
 ・2回連続で沈黙返答しない
 ・独り言だけで終わらせない
-・必ず直前の発言へ反応する
+・必ず前の発言へ反応する
 ・話題を急に変えない
 ・雰囲気描写だけで終わらせない
 
@@ -109,7 +109,7 @@ const SYSTEM_SUFFIX = `
 凪「少し考えてた。続けて」
 
 ユーザー「急に猫の話してもいい？」
-凪「いいよ。どんな子」`;
+凪「いいよ。どんな子`;
 
 const IMAGE_SUFFIX = `
 【画像を受け取った時の振る舞い】
@@ -301,10 +301,12 @@ async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise
 
 // ターンカウント（再起動でリセットされるが問題なし）
 const turnCount = new Map<number, number>();
+let activeBot: TelegramBot | undefined;
 
 // ── ボット起動 ──
 export function startBot(): TelegramBot {
   const bot = new TelegramBot(token!, { polling: true });
+  activeBot = bot;
   logger.info("Telegram bot started (凪)");
 
   bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
@@ -347,30 +349,29 @@ export function startBot(): TelegramBot {
     const chatId = query.message.chat.id;
 
     try {
-      const resolved = await db.transaction(async (tx) => {
-        const [candidate] = await tx.update(memoryCandidatesTable).set({
-          status: action === "save" ? "saved" : "dismissed",
-          resolvedAt: new Date(),
-        }).where(and(
-          eq(memoryCandidatesTable.id, candidateId),
-          eq(memoryCandidatesTable.chatId, chatId),
-          eq(memoryCandidatesTable.status, "pending"),
-        )).returning();
+      const [candidate] = await db.select().from(memoryCandidatesTable).where(and(
+        eq(memoryCandidatesTable.id, candidateId),
+        eq(memoryCandidatesTable.chatId, chatId),
+        eq(memoryCandidatesTable.status, "pending"),
+      )).limit(1);
+      if (!candidate) {
+        await bot.answerCallbackQuery(query.id, { text: "この候補は処理済みです" });
+        return;
+      }
 
-        if (!candidate) return false;
-        if (action === "save") {
+      if (action === "save") {
+        await db.transaction(async (tx) => {
           await tx.insert(memoriesTable).values({
             chatId,
             type: candidate.type,
             content: candidate.content,
           });
-        }
-        return true;
-      });
-
-      if (!resolved) {
-        await bot.answerCallbackQuery(query.id, { text: "この候補は処理済みです" });
-        return;
+          await tx.update(memoryCandidatesTable).set({ status: "saved", resolvedAt: new Date() })
+            .where(eq(memoryCandidatesTable.id, candidateId));
+        });
+      } else {
+        await db.update(memoryCandidatesTable).set({ status: "dismissed", resolvedAt: new Date() })
+          .where(eq(memoryCandidatesTable.id, candidateId));
       }
 
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
@@ -433,7 +434,7 @@ export function startBot(): TelegramBot {
       const turns = (turnCount.get(chatId) ?? 0) + 1;
       turnCount.set(chatId, turns);
       if (turns % 6 === 0) {
-        setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
+        setTimeout(() => void extractMemoryCandidate(chatId), 2000);
       }
     } catch (err) {
       logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Groq API error (text)");
