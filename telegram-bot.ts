@@ -6,17 +6,19 @@ import { logger } from "./logger";
 import { memoryTypes, type MemoryType } from "./memory-candidates";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const groqApiKey = process.env.GROQ_API_KEY;
+const llmApiKey = process.env.LLM_API_KEY;
+const llmModel = process.env.LLM_MODEL;
 
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not set");
-if (!groqApiKey) throw new Error("GROQ_API_KEY is not set");
+if (!llmApiKey) throw new Error("LLM_API_KEY is not set");
+if (!llmModel) throw new Error("LLM_MODEL is not set");
 
 const client = new OpenAI({
-  apiKey: groqApiKey,
-  baseURL: "https://api.groq.com/openai/v1",
+  apiKey: llmApiKey,
+  ...(process.env.LLM_BASE_URL ? { baseURL: process.env.LLM_BASE_URL } : {}),
 });
 
-const TEXT_MODEL = "llama-3.3-70b-versatile";
+const TEXT_MODEL = llmModel;
 
 // ── 凪のキャラクター設定 ──
 const NAGI_PERSONALITY = `あなたは「凪」という名前です。性別も年齢も背景も持たない。長年の静かな友人のような存在です。
@@ -260,7 +262,7 @@ async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise
 
     const res = await client.chat.completions.create({
       model: TEXT_MODEL,
-      max_tokens: 512,
+      max_completion_tokens: 512,
       messages: [
         {
           role: "system",
@@ -409,7 +411,7 @@ export function startBot(): TelegramBot {
 
       const response = await client.chat.completions.create({
         model: TEXT_MODEL,
-        max_tokens: 300,
+        max_completion_tokens: 300,
         messages: [
           { role: "system", content: buildSystemPrompt(memories) },
           ...fullRecent,
@@ -437,7 +439,7 @@ export function startBot(): TelegramBot {
         setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
       }
     } catch (err) {
-      logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Groq API error (text)");
+      logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "LLM API error (text)");
       await bot.sendMessage(chatId, "（通信エラー）");
     }
   });

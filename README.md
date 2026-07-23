@@ -1,6 +1,6 @@
 # 凪 Telegram Bot
 
-TypeScript、Express、PostgreSQL（Drizzle）、Groqで動く Telegram Bot です。会話から抽出した長期記憶は直接保存せず、Telegram 上で承認された候補だけを保存します。
+TypeScript、Express、PostgreSQL（Drizzle）、OpenAI互換APIで動く Telegram Bot です。会話から抽出した長期記憶は直接保存せず、Telegram 上で承認された候補だけを保存します。
 
 ## セットアップ
 
@@ -11,10 +11,14 @@ pnpm install
 export PORT=3000
 export DATABASE_URL='postgresql://...'
 export TELEGRAM_BOT_TOKEN='...'
-export GROQ_API_KEY='...'
+export LLM_API_KEY='...'
+export LLM_MODEL='llama-3.3-70b-versatile'
+export LLM_BASE_URL='https://api.groq.com/openai/v1'
 pnpm run typecheck
 pnpm start
 ```
+
+`LLM_BASE_URL` は省略可能です（省略時はOpenAI公式APIに接続します）。Groq等のOpenAI互換プロバイダーを使う場合はエンドポイントを指定してください。
 
 トークンや API キーをソースへ書き込まず、Replit Secrets または移行先のシークレット管理機能から環境変数として渡してください。時刻に依存する応答は実行環境のタイムゾーンにかかわらず `Asia/Tokyo` を使います。
 
@@ -30,6 +34,6 @@ pnpm start
 
 ## Railway
 
-Railwayのサービスには `DATABASE_URL`、`TELEGRAM_BOT_TOKEN`、`GROQ_API_KEY` を設定してください。`PORT` はRailwayが自動設定します。`railway.json` に起動コマンド、`/health` のヘルスチェック、失敗時の再起動方針を定義しています。
+Railwayのサービスには `DATABASE_URL`、`TELEGRAM_BOT_TOKEN`、`LLM_API_KEY`、`LLM_MODEL`（必要に応じて `LLM_BASE_URL`）を設定してください。`PORT` はRailwayが自動設定します。`railway.json` に起動コマンド、`/health` のヘルスチェック、失敗時の再起動方針を定義しています。
 
 Telegramのlong pollingでは同じBot Tokenを使うプロセスを複数同時に起動できません。レプリカ数は **1** にしてください。
