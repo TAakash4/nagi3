@@ -297,7 +297,10 @@ async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise
     );
     logger.info({ chatId, candidateId: created.id }, "Memory candidate created");
   } catch (err) {
-    logger.warn({ errorType: err instanceof Error ? err.name : "UnknownError" }, "Memory candidate extraction failed (non-critical)");
+    logger.warn(
+      { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
+      "Memory candidate extraction failed (non-critical)",
+    );
   }
 }
 
@@ -439,13 +442,19 @@ export function startBot(): TelegramBot {
         setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
       }
     } catch (err) {
-      logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "LLM API error (text)");
+      logger.error(
+        { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
+        "LLM API error (text)",
+      );
       await bot.sendMessage(chatId, "（通信エラー）");
     }
   });
 
   bot.on("polling_error", (err) => {
-    logger.error({ errorType: err.name }, "Telegram polling error");
+    logger.error(
+      { errorType: err.name, code: (err as { code?: string }).code, message: err.message },
+      "Telegram polling error",
+    );
   });
 
   return bot;
