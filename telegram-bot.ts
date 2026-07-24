@@ -20,6 +20,64 @@ const client = new OpenAI({
 
 const TEXT_MODEL = llmModel;
 
+// ── OpenAI/LLM APIエラーの詳細ログ（APIキーなど機密情報は含めない） ──
+function logOpenAIError(err: unknown, context: string): void {
+  const baseInfo = {
+    model: TEXT_MODEL,
+    baseUrl: process.env.LLM_BASE_URL || "(default)",
+  };
+
+  if (err instanceof OpenAI.APIError) {
+    const status = err.status;
+    let hint: string | undefined;
+    switch (status) {
+      case 401:
+        hint = "API key might be invalid or expired";
+        break;
+      case 403:
+        hint = "API key might not have access to this resource";
+        break;
+      case 404:
+        hint = "Model might not exist or endpoint is wrong";
+        break;
+      case 429:
+        hint = "Rate limit exceeded";
+        break;
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        hint = "LLM provider server error";
+        break;
+      default:
+        hint = undefined;
+    }
+
+    logger.error(
+      {
+        ...baseInfo,
+        status,
+        code: err.code,
+        type: err.type,
+        message: err.message,
+        errorDetails: err.error,
+        hint,
+      },
+      context
+    );
+    return;
+  }
+
+  logger.error(
+    {
+      ...baseInfo,
+      errorType: err instanceof Error ? err.name : "UnknownError",
+      message: err instanceof Error ? err.message : String(err),
+    },
+    context
+  );
+}
+
 // ── 凪のキャラクター設定 ──
 const NAGI_PERSONALITY = `あなたは「凪」という名前です。性別も年齢も背景も持たない。長年の静かな友人のような存在です。
 
@@ -439,7 +497,7 @@ export function startBot(): TelegramBot {
         setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
       }
     } catch (err) {
-      logger.error({ errorType: err instanceof Error ? err.name : "UnknownError" }, "LLM API error (text)");
+      logOpenAIError(err, "LLM API error (text)");
       await bot.sendMessage(chatId, "（通信エラー）");
     }
   });
