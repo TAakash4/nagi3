@@ -6,6 +6,9 @@ export const memoriesTable = pgTable("memories", {
   id: serial("id").primaryKey(),
   chatId: bigint("chat_id", { mode: "number" }).notNull(),
   content: text("content").notNull(),
+  type: text("type", {
+    enum: ["value", "principle", "goal", "learning", "profile"],
+  }).notNull().default("profile"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

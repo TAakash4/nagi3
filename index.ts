@@ -1,6 +1,8 @@
 import app from "./app";
-import { logger } from "./lib/logger";
-import { startBot } from "./lib/telegram-bot";
+import { logger } from "./logger";
+import { startBot } from "./telegram-bot";
+import { closeDatabase } from "./db";
+import { runMigrations } from "./migrate";
 
 const rawPort = process.env["PORT"];
 
@@ -16,12 +18,29 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
-  }
+await runMigrations();
 
+const bot = startBot();
+const server = app.listen(port, () => {
   logger.info({ port }, "Server listening");
-  startBot();
 });
+
+server.on("error", (err) => {
+  logger.error({ err }, "Error listening on port");
+  process.exit(1);
+});
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, "Shutting down");
+
+  server.close();
+  await bot.stopPolling({ cancel: true }).catch(() => undefined);
+  await closeDatabase();
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
