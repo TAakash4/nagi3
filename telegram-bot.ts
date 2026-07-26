@@ -6,16 +6,14 @@ import { logger } from "./logger";
 import { memoryTypes, type MemoryType } from "./memory-candidates";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const llmApiKey = process.env.LLM_API_KEY;
-const llmModel = process.env.LLM_MODEL;
+const llmApiKey = process.env.LLM_API_KEY ?? process.env.OPENAI_API_KEY;
+const llmModel = process.env.LLM_MODEL?.trim() || "gpt-4o-mini";
 
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not set");
-if (!llmApiKey) throw new Error("LLM_API_KEY is not set");
-if (!llmModel) throw new Error("LLM_MODEL is not set");
+if (!llmApiKey) throw new Error("LLM_API_KEY or OPENAI_API_KEY is not set");
 
 const client = new OpenAI({
   apiKey: llmApiKey,
-  ...(process.env.LLM_BASE_URL ? { baseURL: process.env.LLM_BASE_URL } : {}),
 });
 
 const TEXT_MODEL = llmModel;
@@ -263,6 +261,7 @@ async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise
     const res = await client.chat.completions.create({
       model: TEXT_MODEL,
       max_completion_tokens: 512,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
@@ -299,7 +298,7 @@ async function extractMemoryCandidate(bot: TelegramBot, chatId: number): Promise
   } catch (err) {
     logger.warn(
       { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
-      "Memory candidate extraction failed (non-critical)",
+      "OpenAI memory candidate extraction failed (non-critical)",
     );
   }
 }
@@ -312,7 +311,7 @@ let activeBot: TelegramBot | undefined;
 export function startBot(): TelegramBot {
   const bot = new TelegramBot(token!, { polling: true });
   activeBot = bot;
-  logger.info("Telegram bot started (凪)");
+  logger.info({ model: TEXT_MODEL }, "Telegram bot started (凪)");
 
   bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
@@ -444,7 +443,7 @@ export function startBot(): TelegramBot {
     } catch (err) {
       logger.error(
         { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
-        "LLM API error (text)",
+        "OpenAI API error (text)",
       );
       await bot.sendMessage(chatId, "（通信エラー）");
     }
