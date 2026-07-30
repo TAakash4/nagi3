@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
 
@@ -8,14 +8,20 @@ export async function runMigrations(): Promise<void> {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is not set");
 
-  const migrationUrl = new URL("./migrations/0001_memory_candidates.sql", import.meta.url);
-  const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+  const migrationsUrl = new URL("./migrations/", import.meta.url);
+  const migrationFiles = (await readdir(migrationsUrl))
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
   const client = new Client({ connectionString });
 
   await client.connect();
   try {
-    await client.query(sql);
-    logger.info("Database migrations completed");
+    for (const migrationFile of migrationFiles) {
+      const migrationUrl = new URL(migrationFile, migrationsUrl);
+      const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
+      await client.query(sql);
+      logger.info({ migrationFile }, "Database migration completed");
+    }
   } finally {
     await client.end();
   }

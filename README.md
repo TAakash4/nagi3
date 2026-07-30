@@ -31,6 +31,18 @@ Railwayの既存設定に合わせて、APIキーは `LLM_API_KEY`、モデル�
 
 マイグレーションは起動時に自動実行されます。既存の `memories` を削除せず、`type` 列と `memory_candidates` テーブルを追加します。手動で確認するときは `pnpm run db:migrate` を実行できます。
 
+## ライフOS機能
+
+近況報告には、まず受け止めまたは短い要約を返します。回答に必要でない質問や、会話を続けるためだけの質問は行いません。各応答はバックグラウンドで最低限の品質評価を保存します。
+
+- `/preferences` — 会話設定の一覧
+- `/preference 項目 | 内容` — 明示的な会話設定を追加・更新
+- `/projects` — 進行中のプロジェクト一覧
+- `/project 名前 | 現在 | 次 | 進捗%` — プロジェクトを追加・更新
+- `/summary` — 最新の日次まとめ（6ターンごとに当日の会話から更新）
+
+`/start` は履歴や記憶を削除しません。会話履歴だけを消す場合は `/clear` を使います。
+
 ## Railway
 
 Railwayのサービスには `DATABASE_URL`、`TELEGRAM_BOT_TOKEN`、`LLM_API_KEY`、`LLM_MODEL=gpt-4o-mini` を設定してください。`PORT` はRailwayが自動設定します。OpenAI公式APIへ接続するため、独自のベースURLは不要です。`railway.json` に起動コマンド、`/health` のヘルスチェック、失敗時の再起動方針を定義しています。
