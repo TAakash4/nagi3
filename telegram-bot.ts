@@ -1,9 +1,19 @@
 import TelegramBot from "node-telegram-bot-api";
 import OpenAI from "openai";
-import { db, conversationHistoryTable, memoriesTable, memoryCandidatesTable } from "./db";
-import { eq, desc, and } from "drizzle-orm";
+import {
+  conversationFeedbackTable,
+  conversationHistoryTable,
+  db,
+  memoriesTable,
+  memoryCandidatesTable,
+  preferencesTable,
+  projectsTable,
+  summariesTable,
+} from "./db";
+import { eq, desc, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { memoryTypes, type MemoryType } from "./memory-candidates";
+import { looksLikeUnnecessaryQuestion, STATUS_UPDATE_POLICY } from "./response-policy";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const llmApiKey = process.env.LLM_API_KEY ?? process.env.OPENAI_API_KEY;
@@ -138,12 +148,25 @@ const getTimeContext = (): string => {
   const nightNote = timeLabel === "深夜" ? "深夜なので沈黙が増える。" : "";
   return `\n【今の状況】現在の時間帯は${timeLabel}。この時間帯にそぐわない言い回しは使わない。${nightNote}`;
 };
-const buildSystemPrompt = (memories: string[]): string => {
+const buildSystemPrompt = (
+  memories: string[],
+  preferences: Array<{ key: string; value: string }>,
+  projects: Array<{ name: string; currentFocus: string | null; nextAction: string | null }>,
+): string => {
   const memSection =
     memories.length > 0
       ? `\n【このユーザーについて覚えていること】\n${memories.map((m) => `・${m}`).join("\n")}\n`
       : "";
-  return NAGI_PERSONALITY + memSection + SYSTEM_SUFFIX + getTimeContext();
+  const preferenceSection = preferences.length > 0
+    ? `\n【ユーザーが指定した会話設定】\n${preferences.map((item) => `・${item.key}: ${item.value}`).join("\n")}\n`
+    : "";
+  const projectSection = projects.length > 0
+    ? `\n【進行中のプロジェクト】\n${projects.map((project) =>
+      `・${project.name}（現在: ${project.currentFocus ?? "未設定"}、次: ${project.nextAction ?? "未設定"}）`
+    ).join("\n")}\n関係のない話題にプロジェクトを持ち込まない。`
+    : "";
+  return NAGI_PERSONALITY + STATUS_UPDATE_POLICY + preferenceSection + memSection
+    + projectSection + SYSTEM_SUFFIX + getTimeContext();
 };
 
 
@@ -192,8 +215,12 @@ async function appendMessage(
   chatId: number,
   role: "user" | "assistant",
   content: string
-): Promise<void> {
-  await db.insert(conversationHistoryTable).values({ chatId, role, content });
+): Promise<number> {
+  const [message] = await db.insert(conversationHistoryTable).values({ chatId, role, content }).returning({
+    id: conversationHistoryTable.id,
+  });
+  if (!message) throw new Error("Failed to save conversation message");
+  return message.id;
 }
 
 async function clearHistory(chatId: number): Promise<void> {
@@ -209,11 +236,88 @@ async function loadMemories(chatId: number): Promise<string[]> {
   return rows.map((r) => r.content);
 }
 
-async function replaceMemories(chatId: number, items: string[]): Promise<void> {
-  await db.delete(memoriesTable).where(eq(memoriesTable.chatId, chatId));
-  if (items.length > 0) {
-    await db.insert(memoriesTable).values(items.map((content) => ({ chatId, content })));
+async function loadPreferences(chatId: number): Promise<Array<{ key: string; value: string }>> {
+  return db.select({ key: preferencesTable.key, value: preferencesTable.value })
+    .from(preferencesTable)
+    .where(and(eq(preferencesTable.chatId, chatId), eq(preferencesTable.enabled, true)))
+    .orderBy(preferencesTable.key);
+}
+
+async function loadProjects(chatId: number) {
+  return db.select().from(projectsTable).where(and(
+    eq(projectsTable.chatId, chatId),
+    eq(projectsTable.status, "active"),
+  )).orderBy(desc(projectsTable.updatedAt));
+}
+
+function japanDate(date = new Date()): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+async function updateDailySummary(chatId: number): Promise<void> {
+  try {
+    const today = japanDate();
+    const userMessages = await db.select({ content: conversationHistoryTable.content })
+      .from(conversationHistoryTable)
+      .where(and(
+        eq(conversationHistoryTable.chatId, chatId),
+        eq(conversationHistoryTable.role, "user"),
+        sql`(${conversationHistoryTable.createdAt} AT TIME ZONE 'Asia/Tokyo')::date = ${today}::date`,
+      ))
+      .orderBy(desc(conversationHistoryTable.createdAt))
+      .limit(20);
+    if (userMessages.length === 0) return;
+    const response = await client.chat.completions.create({
+      model: TEXT_MODEL,
+      max_completion_tokens: 180,
+      messages: [
+        { role: "system", content: "ユーザー本人が述べた事実だけを、日次記録として日本語3項目以内で簡潔に要約してください。推測や助言は含めません。" },
+        { role: "user", content: userMessages.reverse().map((message) => message.content).join("\n") },
+      ],
+    });
+    const content = stripThinking(response.choices[0]?.message?.content ?? "").trim();
+    if (!content) return;
+    await db.insert(summariesTable).values({
+      chatId,
+      periodType: "daily",
+      periodStart: today,
+      content,
+    }).onConflictDoUpdate({
+      target: [summariesTable.chatId, summariesTable.periodType, summariesTable.periodStart],
+      set: { content, updatedAt: new Date() },
+    });
+  } catch (err) {
+    logger.warn({ message: err instanceof Error ? err.message : String(err) }, "Daily summary update failed (non-critical)");
   }
+}
+
+async function saveResponseFeedback(
+  chatId: number,
+  assistantMessageId: number,
+  userMessage: string,
+  assistantMessage: string,
+): Promise<void> {
+  const unnecessaryQuestion = looksLikeUnnecessaryQuestion(userMessage, assistantMessage);
+  const issueTags = unnecessaryQuestion ? ["unnecessary_question"] : [];
+  const isStatusUpdate = !/[?？]/.test(userMessage);
+  const acknowledgesUpdate = assistantMessage.length >= 8 && !unnecessaryQuestion;
+  await db.insert(conversationFeedbackTable).values({
+    chatId,
+    assistantMessageId,
+    empathyFirstScore: isStatusUpdate ? (acknowledgesUpdate ? 4 : 2) : 3,
+    summaryQualityScore: isStatusUpdate ? (acknowledgesUpdate ? 4 : 2) : 3,
+    questionNecessityScore: unnecessaryQuestion ? 2 : 5,
+    preferenceComplianceScore: unnecessaryQuestion ? 2 : 5,
+    issueTags,
+    rationale: unnecessaryQuestion
+      ? "明示的な質問ではない発言に対して質問を返した"
+      : "不要な質問を示す形式上の問題は検出されなかった",
+  }).onConflictDoNothing();
 }
 
 const MEMORY_LABELS: Record<MemoryType, string> = {
@@ -315,10 +419,8 @@ export function startBot(): TelegramBot {
 
   bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
     const chatId = msg.chat.id;
-    await clearHistory(chatId);
-    await replaceMemories(chatId, []);
     turnCount.set(chatId, 0);
-    await bot.sendMessage(chatId, "……来た。");
+    await bot.sendMessage(chatId, "……来た。前の記録もそのまま残ってる。");
   });
 
   bot.onText(/^\/clear(?:@\w+)?$/, async (msg) => {
@@ -338,10 +440,80 @@ export function startBot(): TelegramBot {
     }
   });
 
+  bot.onText(/^\/preferences(?:@\w+)?$/, async (msg) => {
+    const items = await loadPreferences(msg.chat.id);
+    await bot.sendMessage(msg.chat.id, items.length === 0
+      ? "会話設定はまだない。\n追加: /preference 項目 | 内容"
+      : `会話設定：\n${items.map((item) => `・${item.key}: ${item.value}`).join("\n")}`);
+  });
+
+  bot.onText(/^\/preference(?:@\w+)?\s+(.+)$/, async (msg, match) => {
+    const [key, ...valueParts] = (match?.[1] ?? "").split("|").map((part) => part.trim());
+    const value = valueParts.join(" | ");
+    if (!key || !value) {
+      await bot.sendMessage(msg.chat.id, "形式: /preference 質問方針 | 質問は必要最小限");
+      return;
+    }
+    await db.insert(preferencesTable).values({ chatId: msg.chat.id, key, value, source: "explicit" })
+      .onConflictDoUpdate({
+        target: [preferencesTable.chatId, preferencesTable.key],
+        set: { value, source: "explicit", enabled: true, updatedAt: new Date() },
+      });
+    await bot.sendMessage(msg.chat.id, `会話設定に追加した：${key}`);
+  });
+
+  bot.onText(/^\/projects(?:@\w+)?$/, async (msg) => {
+    const projects = await loadProjects(msg.chat.id);
+    await bot.sendMessage(msg.chat.id, projects.length === 0
+      ? "進行中のプロジェクトはまだない。\n追加: /project 名前 | 現在 | 次 | 進捗%"
+      : `進行中：\n${projects.map((project) =>
+        `・${project.name}\n  現在: ${project.currentFocus ?? "未設定"}\n  次: ${project.nextAction ?? "未設定"}${project.progressPercent === null ? "" : `\n  進捗: ${project.progressPercent}%`}`
+      ).join("\n")}`);
+  });
+
+  bot.onText(/^\/project(?:@\w+)?\s+(.+)$/, async (msg, match) => {
+    const [name, currentFocus, nextAction, progressText] = (match?.[1] ?? "")
+      .split("|").map((part) => part.trim());
+    const progressPercent = progressText === undefined || progressText === ""
+      ? null
+      : Number(progressText.replace("%", ""));
+    if (!name || (progressPercent !== null && (!Number.isInteger(progressPercent) || progressPercent < 0 || progressPercent > 100))) {
+      await bot.sendMessage(msg.chat.id, "形式: /project 名前 | 現在 | 次 | 進捗%（0〜100）");
+      return;
+    }
+    await db.insert(projectsTable).values({
+      chatId: msg.chat.id,
+      name,
+      currentFocus: currentFocus || null,
+      nextAction: nextAction || null,
+      progressPercent,
+    }).onConflictDoUpdate({
+      target: [projectsTable.chatId, projectsTable.name],
+      set: {
+        currentFocus: currentFocus || null,
+        nextAction: nextAction || null,
+        progressPercent,
+        status: "active",
+        updatedAt: new Date(),
+      },
+    });
+    await bot.sendMessage(msg.chat.id, `プロジェクトを更新した：${name}`);
+  });
+
+  bot.onText(/^\/summary(?:@\w+)?$/, async (msg) => {
+    const [summary] = await db.select().from(summariesTable).where(and(
+      eq(summariesTable.chatId, msg.chat.id),
+      eq(summariesTable.periodType, "daily"),
+    )).orderBy(desc(summariesTable.periodStart)).limit(1);
+    await bot.sendMessage(msg.chat.id, summary
+      ? `${summary.periodStart}のまとめ\n${summary.content}`
+      : "日次まとめはまだない。会話が6ターン進むと作る。");
+  });
+
   bot.onText(/^\/help(?:@\w+)?$/, (msg) => {
     bot.sendMessage(
       msg.chat.id,
-      "/start — はじめる（記憶もリセット）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/help — ヘルプ"
+      "/start — はじめる（記録は残す）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/preferences — 会話設定\n/projects — プロジェクト\n/summary — 最新の日次まとめ\n/help — ヘルプ"
     );
   });
 
@@ -405,9 +577,11 @@ export function startBot(): TelegramBot {
       await new Promise((r) => setTimeout(r, 300 + Math.random() * 900));
 
       await appendMessage(chatId, "user", text);
-      const [history, memories] = await Promise.all([
+      const [history, memories, preferences, projects] = await Promise.all([
         loadHistory(chatId),
         loadMemories(chatId),
+        loadPreferences(chatId),
+        loadProjects(chatId),
       ]);
       const fullRecent = history.slice(-5);
 
@@ -415,7 +589,7 @@ export function startBot(): TelegramBot {
         model: TEXT_MODEL,
         max_completion_tokens: 300,
         messages: [
-          { role: "system", content: buildSystemPrompt(memories) },
+          { role: "system", content: buildSystemPrompt(memories, preferences, projects) },
           ...fullRecent,
         ],
       });
@@ -431,14 +605,18 @@ export function startBot(): TelegramBot {
         cleaned === "…" 
           ? emptyResponseFallback(history)
           : cleaned;
-      await appendMessage(chatId, "assistant", reply);
+      const assistantMessageId = await appendMessage(chatId, "assistant", reply);
       await bot.sendMessage(chatId, reply);
+      void saveResponseFeedback(chatId, assistantMessageId, text, reply).catch((err) => {
+        logger.warn({ message: err instanceof Error ? err.message : String(err) }, "Response feedback save failed (non-critical)");
+      });
 
       // 6ターンごとに、長期記憶へ直接保存せず候補を抽出する
       const turns = (turnCount.get(chatId) ?? 0) + 1;
       turnCount.set(chatId, turns);
       if (turns % 6 === 0) {
         setTimeout(() => void extractMemoryCandidate(bot, chatId), 2000);
+        setTimeout(() => void updateDailySummary(chatId), 2500);
       }
     } catch (err) {
       logger.error(
