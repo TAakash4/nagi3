@@ -14,6 +14,7 @@ import { eq, desc, and, sql } from "drizzle-orm";
 import { logger } from "./logger";
 import { memoryTypes, type MemoryType } from "./memory-candidates";
 import { looksLikeUnnecessaryQuestion, STATUS_UPDATE_POLICY } from "./response-policy";
+import { formatSearchResponse } from "./web-search";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const llmApiKey = process.env.LLM_API_KEY ?? process.env.OPENAI_API_KEY;
@@ -510,10 +511,41 @@ export function startBot(): TelegramBot {
       : "日次まとめはまだない。会話が6ターン進むと作る。");
   });
 
+  bot.onText(/^\/search(?:@\w+)?(?:\s+(.+))?$/, async (msg, match) => {
+    const chatId = msg.chat.id;
+    const query = match?.[1]?.trim();
+    if (!query) {
+      await bot.sendMessage(chatId, "検索する言葉を続けて送って。例: /search 最近の月面探査");
+      return;
+    }
+
+    try {
+      await bot.sendChatAction(chatId, "typing");
+      const response = await client.responses.create({
+        model: TEXT_MODEL,
+        tools: [{ type: "web_search_preview", search_context_size: "low" }],
+        instructions:
+          "ウェブ検索を使い、日本語で簡潔に答えてください。深掘り調査ではなく、会話の話題を少し広げるための要点を2〜3個に絞ります。推測と検索で確認できた事実を混同しないでください。",
+        input: query,
+        max_output_tokens: 500,
+      });
+      const reply = formatSearchResponse(response);
+      await appendMessage(chatId, "user", `検索: ${query}`);
+      await appendMessage(chatId, "assistant", reply);
+      await bot.sendMessage(chatId, reply, { disable_web_page_preview: true });
+    } catch (err) {
+      logger.error(
+        { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
+        "OpenAI API error (web search)",
+      );
+      await bot.sendMessage(chatId, "（検索につながらなかった）");
+    }
+  });
+
   bot.onText(/^\/help(?:@\w+)?$/, (msg) => {
     bot.sendMessage(
       msg.chat.id,
-      "/start — はじめる（記録は残す）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/preferences — 会話設定\n/projects — プロジェクト\n/summary — 最新の日次まとめ\n/help — ヘルプ"
+      "/start — はじめる（記録は残す）\n/clear — 会話をリセット\n/memory — 覚えていることを見る\n/preferences — 会話設定\n/projects — プロジェクト\n/summary — 最新の日次まとめ\n/search 調べたいこと — ウェブ検索\n/help — ヘルプ"
     );
   });
 
