@@ -16,10 +16,27 @@ export async function runMigrations(): Promise<void> {
 
   await client.connect();
   try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        filename text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now()
+      );
+    `);
+
     for (const migrationFile of migrationFiles) {
+      const applied = await client.query(
+        "SELECT 1 FROM schema_migrations WHERE filename = $1",
+        [migrationFile],
+      );
+      if (applied.rowCount && applied.rowCount > 0) continue;
+
       const migrationUrl = new URL(migrationFile, migrationsUrl);
       const sql = await readFile(fileURLToPath(migrationUrl), "utf8");
       await client.query(sql);
+      await client.query(
+        "INSERT INTO schema_migrations (filename) VALUES ($1)",
+        [migrationFile],
+      );
       logger.info({ migrationFile }, "Database migration completed");
     }
   } finally {

@@ -29,7 +29,7 @@ Railwayの既存設定に合わせて、APIキーは `LLM_API_KEY`、モデル�
 - **見送り**: 候補を長期記憶へ追加しません。
 - 未操作の候補は `pending` のままで、応答プロンプトの長期記憶には含まれません。
 
-マイグレーションは起動時に自動実行されます。既存の `memories` を削除せず、`type` 列と `memory_candidates` テーブルを追加します。手動で確認するときは `pnpm run db:migrate` を実行できます。
+マイグレーションは起動時に自動実行されます。適用済みの変更は `schema_migrations` テーブルで管理され、未適用のものだけ実行されます。既存の `memories` を削除せず、`type` 列と `memory_candidates` テーブルを追加します。手動で確認するときは `pnpm run db:migrate` を実行できます。
 
 ## ライフOS機能
 
@@ -39,6 +39,7 @@ Railwayの既存設定に合わせて、APIキーは `LLM_API_KEY`、モデル�
 - `/preference 項目 | 内容` — 明示的な会話設定を追加・更新
 - `/projects` — 進行中のプロジェクト一覧
 - `/project 名前 | 現在 | 次 | 進捗%` — プロジェクトを追加・更新
+- `/projectstatus 名前 | 状態` — プロジェクトの状態を変更（`active` / `paused` / `completed` / `archived`）
 - `/summary` — 最新の日次まとめ（6ターンごとに当日の会話から更新）
 - `/search 調べたいこと` — ウェブを軽く検索し、話題を広げる要点と参照ページを表示
 

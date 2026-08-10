@@ -8,6 +8,7 @@ import { conversationFeedbackTable } from "./conversation-feedback";
 import { preferencesTable } from "./preferences";
 import { projectsTable } from "./projects";
 import { summariesTable } from "./summaries";
+import { turnCountTable } from "./turn-count";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is not set");
@@ -25,4 +26,5 @@ export {
   preferencesTable,
   projectsTable,
   summariesTable,
+  turnCountTable,
 };
