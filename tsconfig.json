@@ -8,6 +8,6 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["*.ts"],
+  "include": ["*.ts", "bot/**/*.ts"],
   "exclude": ["node_modules"]
 }
