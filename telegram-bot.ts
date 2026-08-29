@@ -11,7 +11,7 @@ import {
 } from "./bot/conversation-store";
 import { saveResponseFeedback, updateDailySummary } from "./bot/feedback";
 import { extractMemoryCandidate } from "./bot/memory-extraction";
-import { openaiClient, textModel } from "./bot/openai-client";
+import { openaiClient, searchModel, textModel } from "./bot/openai-client";
 import { buildSystemPrompt, emptyResponseFallback, stripThinking } from "./bot/prompts";
 import {
   db,
@@ -30,7 +30,37 @@ import {
   upsertProject,
 } from "./project-commands";
 import { incrementTurnCount, resetTurnCount, shouldRunPeriodicTasks } from "./turn-count";
-import { formatSearchResponse } from "./web-search";
+import {
+  describeSearchError,
+  formatSearchResponse,
+  isUnsupportedToolError,
+  searchInstructions,
+  webSearchTools,
+} from "./web-search";
+
+async function searchWeb(query: string): Promise<string> {
+  let lastError: unknown;
+  for (const tool of webSearchTools) {
+    try {
+      const response = await openaiClient.responses.create({
+        model: searchModel,
+        tools: [tool],
+        instructions: searchInstructions,
+        input: query,
+        max_output_tokens: 1200,
+      });
+      return formatSearchResponse(response);
+    } catch (err) {
+      lastError = err;
+      if (!isUnsupportedToolError(err)) throw err;
+      logger.warn(
+        { tool: tool.type, model: searchModel, message: describeSearchError(err) },
+        "Web search tool unsupported for this model, trying the next tool type",
+      );
+    }
+  }
+  throw lastError;
+}
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not set");
@@ -143,24 +173,17 @@ export function startBot(): TelegramBot {
 
     try {
       await bot.sendChatAction(chatId, "typing");
-      const response = await openaiClient.responses.create({
-        model: textModel,
-        tools: [{ type: "web_search_preview", search_context_size: "low" }],
-        instructions:
-          "ウェブ検索を使い、日本語で簡潔に答えてください。深掘り調査ではなく、会話の話題を少し広げるための要点を2〜3個に絞ります。推測と検索で確認できた事実を混同しないでください。",
-        input: query,
-        max_output_tokens: 500,
-      });
-      const reply = formatSearchResponse(response);
+      const reply = await searchWeb(query);
       await appendMessage(chatId, "user", `検索: ${query}`);
       await appendMessage(chatId, "assistant", reply);
       await bot.sendMessage(chatId, reply, { disable_web_page_preview: true });
     } catch (err) {
+      const reason = describeSearchError(err);
       logger.error(
-        { errorType: err instanceof Error ? err.name : "UnknownError", message: err instanceof Error ? err.message : String(err) },
+        { errorType: err instanceof Error ? err.name : "UnknownError", model: searchModel, message: reason },
         "OpenAI API error (web search)",
       );
-      await bot.sendMessage(chatId, "（検索につながらなかった）");
+      await bot.sendMessage(chatId, `（検索につながらなかった：${reason}）`);
     }
   });
 
