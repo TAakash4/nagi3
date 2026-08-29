@@ -26,6 +26,42 @@ export const webSearchTools = [
 export const searchInstructions =
   "ウェブ検索を使い、日本語で簡潔に答えてください。深掘り調査ではなく、会話の話題を少し広げるための要点を2〜3個に絞ります。推測と検索で確認できた事実を混同しないでください。";
 
+// 通常会話用。gpt-4o-mini はホストのウェブ検索ツールを使えないので、
+// 「検索するかどうか」だけを普通の function tool で判断させ、
+// 実際の検索は SEARCH_MODEL 側の Responses API に投げる。
+export const searchFunctionTool = {
+  type: "function",
+  function: {
+    name: "search_web",
+    description:
+      "ウェブを検索して最新の情報を確認する。今日や最近の出来事、新しい作品やニュース、知らない固有名詞など、手持ちの知識では確かめられないことを聞かれたときだけ使う。気持ちの話や雑談には使わない。",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "検索クエリ。日本語でよい。",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+} as const;
+
+export function parseSearchQuery(rawArguments: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawArguments);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const query = (parsed as { query?: unknown }).query;
+  if (typeof query !== "string") return null;
+  return query.trim() || null;
+}
+
 export const searchMaxOutputTokens = 1200;
 
 // tool_choice の既定は "auto" で、モデルが「検索しなくても答えられる」と判断すると

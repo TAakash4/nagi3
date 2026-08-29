@@ -6,6 +6,8 @@ import {
   describeSearchError,
   formatSearchResponse,
   isUnsupportedToolError,
+  parseSearchQuery,
+  searchFunctionTool,
   webSearchTools,
 } from "./web-search";
 
@@ -76,4 +78,20 @@ test("検索リクエストはモデルに必ず検索させる", () => {
   assert.equal(request.model, "gpt-4o");
   assert.equal(request.input, "最近の月面探査");
   assert.deepEqual(request.tools, [webSearchTools[0]]);
+});
+
+test("通常会話の検索ツールは query だけを受け取る", () => {
+  assert.equal(searchFunctionTool.function.name, "search_web");
+  assert.deepEqual(searchFunctionTool.function.parameters.required, ["query"]);
+});
+
+test("ツール呼び出しの引数から検索クエリを取り出す", () => {
+  assert.equal(parseSearchQuery('{"query":"  最近の月面探査 "}'), "最近の月面探査");
+});
+
+test("壊れた引数や空のクエリは検索しない", () => {
+  assert.equal(parseSearchQuery("{"), null);
+  assert.equal(parseSearchQuery('{"query":"   "}'), null);
+  assert.equal(parseSearchQuery('{"query":42}'), null);
+  assert.equal(parseSearchQuery('"最近の月面探査"'), null);
 });
