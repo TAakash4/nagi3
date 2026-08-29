@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildSearchRequest,
   describeSearchError,
   formatSearchResponse,
   isUnsupportedToolError,
@@ -66,4 +67,13 @@ test("検索ツールと無関係なエラーは切り替え対象にしない",
 
 test("検索ツールは対応モデルが広い順に試す", () => {
   assert.deepEqual(webSearchTools.map((tool) => tool.type), ["web_search_preview", "web_search"]);
+});
+
+test("検索リクエストはモデルに必ず検索させる", () => {
+  const request = buildSearchRequest("最近の月面探査", "gpt-4o", webSearchTools[0]);
+
+  assert.equal(request.tool_choice, "required");
+  assert.equal(request.model, "gpt-4o");
+  assert.equal(request.input, "最近の月面探査");
+  assert.deepEqual(request.tools, [webSearchTools[0]]);
 });

@@ -26,6 +26,25 @@ export const webSearchTools = [
 export const searchInstructions =
   "ウェブ検索を使い、日本語で簡潔に答えてください。深掘り調査ではなく、会話の話題を少し広げるための要点を2〜3個に絞ります。推測と検索で確認できた事実を混同しないでください。";
 
+export const searchMaxOutputTokens = 1200;
+
+// tool_choice の既定は "auto" で、モデルが「検索しなくても答えられる」と判断すると
+// 検索せずに手持ちの知識だけで答えてしまう。/search では必ず検索させる。
+export function buildSearchRequest(
+  query: string,
+  model: string,
+  tool: (typeof webSearchTools)[number],
+) {
+  return {
+    model,
+    tools: [tool],
+    tool_choice: "required" as const,
+    instructions: searchInstructions,
+    input: query,
+    max_output_tokens: searchMaxOutputTokens,
+  };
+}
+
 export function describeSearchError(err: unknown): string {
   const source = err as { error?: { message?: unknown }; message?: unknown } | null;
   const apiMessage = typeof source?.error?.message === "string" ? source.error.message : undefined;
