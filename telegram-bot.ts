@@ -1,3 +1,4 @@
+import type OpenAI from "openai";
 import TelegramBot from "node-telegram-bot-api";
 import { and, desc, eq } from "drizzle-orm";
 
@@ -12,6 +13,7 @@ import {
 import { saveResponseFeedback, updateDailySummary } from "./bot/feedback";
 import { extractMemoryCandidate } from "./bot/memory-extraction";
 import { openaiClient, searchModel, textModel } from "./bot/openai-client";
+import { searchWeb } from "./bot/web-search-runner";
 import { buildSystemPrompt, emptyResponseFallback, stripThinking } from "./bot/prompts";
 import {
   db,
@@ -30,32 +32,28 @@ import {
   upsertProject,
 } from "./project-commands";
 import { incrementTurnCount, resetTurnCount, shouldRunPeriodicTasks } from "./turn-count";
-import {
-  buildSearchRequest,
-  describeSearchError,
-  formatSearchResponse,
-  isUnsupportedToolError,
-  webSearchTools,
-} from "./web-search";
+import { describeSearchError, parseSearchQuery, searchFunctionTool } from "./web-search";
 
-async function searchWeb(query: string): Promise<string> {
-  let lastError: unknown;
-  for (const tool of webSearchTools) {
-    try {
-      const response = await openaiClient.responses.create(
-        buildSearchRequest(query, searchModel, tool),
-      );
-      return formatSearchResponse(response);
-    } catch (err) {
-      lastError = err;
-      if (!isUnsupportedToolError(err)) throw err;
-      logger.warn(
-        { tool: tool.type, model: searchModel, message: describeSearchError(err) },
-        "Web search tool unsupported for this model, trying the next tool type",
-      );
-    }
+// 通常会話で凪が search_web を呼んだときだけ実際の検索を走らせる。
+// 会話を止めないよう、検索の失敗は投げずに文章で返す。
+async function runSearchToolCall(
+  call: OpenAI.Chat.Completions.ChatCompletionMessageToolCall,
+): Promise<string> {
+  if (call.type !== "function" || call.function.name !== searchFunctionTool.function.name) {
+    return "その道具は使えない。";
   }
-  throw lastError;
+  const query = parseSearchQuery(call.function.arguments);
+  if (!query) return "検索する言葉を受け取れなかった。";
+
+  try {
+    return await searchWeb(query);
+  } catch (err) {
+    logger.warn(
+      { model: searchModel, message: describeSearchError(err) },
+      "Web search failed during conversation",
+    );
+    return "検索できなかった。手持ちの範囲で答えて、確かめられていないことは確かめられていないと伝えて。";
+  }
 }
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -256,14 +254,36 @@ export function startBot(): TelegramBot {
       ]);
       const fullRecent = history.slice(-5);
 
-      const response = await openaiClient.chat.completions.create({
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+        { role: "system", content: buildSystemPrompt(memories, preferences, projects) },
+        ...fullRecent,
+      ];
+
+      let response = await openaiClient.chat.completions.create({
         model: textModel,
         max_completion_tokens: 300,
-        messages: [
-          { role: "system", content: buildSystemPrompt(memories, preferences, projects) },
-          ...fullRecent,
-        ],
+        tools: [searchFunctionTool],
+        messages,
       });
+
+      // 検索は1往復だけ。2回目はツールを渡さないので必ず本文が返る。
+      const toolCalls = response.choices[0]?.message?.tool_calls ?? [];
+      if (toolCalls.length > 0) {
+        messages.push(response.choices[0]!.message);
+        for (const call of toolCalls) {
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: await runSearchToolCall(call),
+          });
+        }
+        await bot.sendChatAction(chatId, "typing");
+        response = await openaiClient.chat.completions.create({
+          model: textModel,
+          max_completion_tokens: 300,
+          messages,
+        });
+      }
 
       const raw = response.choices[0]?.message?.content ?? "";
       const cleaned = stripThinking(raw).trim();

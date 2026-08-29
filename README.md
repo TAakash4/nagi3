@@ -20,7 +20,9 @@ pnpm start
 
 Railwayの既存設定に合わせて、APIキーは `LLM_API_KEY`、モデルは `LLM_MODEL` から読み込みます。`LLM_API_KEY` が未設定の場合は `OPENAI_API_KEY` も利用できます。`LLM_MODEL` が空または未設定の場合は `gpt-4o-mini` を使用します。通常会話と6ターンごとの記憶候補抽出には同じモデルを利用します。
 
-`/search` だけは `SEARCH_MODEL`（未設定なら `gpt-4o`）を使います。`gpt-4o-mini` のような軽量モデルは Responses API のウェブ検索ツールに対応しておらず、`Hosted tool 'web_search_preview' is not supported with ...` で失敗するためです。検索ツールは `web_search_preview` を先に試し、モデルが未対応ならば `web_search` に切り替えます。`tool_choice` は `required` を指定しており、モデルが検索を省いて手持ちの知識だけで答えることはありません。どちらも通らない場合は Telegram の返信に API のエラー文をそのまま添えます。
+検索は `SEARCH_MODEL`（未設定なら `gpt-4o`）を使います。`gpt-4o-mini` のような軽量モデルは Responses API のウェブ検索ツールに対応しておらず、`Hosted tool 'web_search_preview' is not supported with ...` で失敗するためです。検索ツールは `web_search_preview` を先に試し、モデルが未対応ならば `web_search` に切り替えます。`tool_choice` は `required` を指定しており、モデルが検索を省いて手持ちの知識だけで答えることはありません。どちらも通らない場合は Telegram の返信に API のエラー文をそのまま添えます。
+
+通常の会話でも、凪が「手持ちの知識では確かめられない」と判断したときだけ自動で検索します。`LLM_MODEL` 側は `search_web` という関数ツールで検索の要否を判断するだけで、実際の検索は `SEARCH_MODEL` が行います。検索は1往復のみで、失敗しても会話は止まりません。調べものだけをしたいときは今までどおり `/search` を使えます。
 
 トークンや API キーをソースへ書き込まず、Replit Secrets または移行先のシークレット管理機能から環境変数として渡してください。時刻に依存する応答は実行環境のタイムゾーンにかかわらず `Asia/Tokyo` を使います。
 
